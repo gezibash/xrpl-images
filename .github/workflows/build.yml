@@ -1,0 +1,200 @@
+name: Build and Push Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'images/**'
+      - 'build/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Image to build (all, rippled, clio)'
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - rippled
+          - clio
+      force_rebuild:
+        description: 'Force rebuild even if image exists'
+        default: false
+        type: boolean
+
+env:
+  DOCKERHUB_NAMESPACE: gezibash
+
+jobs:
+  # ==================================================
+  # Generate build matrix from matrix.json
+  # ==================================================
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate build matrix
+        id: generate
+        run: |
+          # Filter by image if specified
+          image_filter="${{ github.event.inputs.image }}"
+          if [ -z "$image_filter" ] || [ "$image_filter" = "all" ]; then
+            image_filter=""
+          fi
+
+          # Expand matrix.json into individual build jobs
+          matrix=$(jq -c --arg filter "$image_filter" '{
+            include: [
+              .images[] |
+              select($filter == "" or .name == $filter) |
+              . as $img |
+              .versions[] as $version |
+              .variants[] as $variant |
+              {
+                image: $img.name,
+                version: $version,
+                variant: $variant,
+                base: $img.base_images[$variant],
+                default_variant: $img.default_variant,
+                default_version: $img.default_version
+              }
+            ]
+          }' build/matrix.json)
+
+          echo "matrix=$matrix" >> $GITHUB_OUTPUT
+          echo "Generated matrix:"
+          echo "$matrix" | jq .
+
+  # ==================================================
+  # Build and push images
+  # ==================================================
+  build:
+    needs: generate-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ------------------------------------------------
+      # Check if image already exists in registry
+      # ------------------------------------------------
+      - name: Check if image exists
+        id: check
+        run: |
+          # Primary tag format: version-base-variant
+          tag="${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:${{ matrix.version }}-${{ matrix.base }}-${{ matrix.variant }}"
+
+          if docker manifest inspect "$tag" > /dev/null 2>&1; then
+            echo "Image $tag already exists"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Image $tag does not exist, will build"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ------------------------------------------------
+      # Skip if exists (unless force rebuild)
+      # ------------------------------------------------
+      - name: Skip if exists
+        if: steps.check.outputs.exists == 'true' && github.event.inputs.force_rebuild != 'true'
+        run: echo "Skipping build - image already exists"
+
+      # ------------------------------------------------
+      # Setup Docker Buildx
+      # ------------------------------------------------
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.exists == 'false' || github.event.inputs.force_rebuild == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      # ------------------------------------------------
+      # Login to Docker Hub
+      # ------------------------------------------------
+      - name: Login to Docker Hub
+        if: steps.check.outputs.exists == 'false' || github.event.inputs.force_rebuild == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: gezibash
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # ------------------------------------------------
+      # Login to GHCR
+      # ------------------------------------------------
+      - name: Login to GHCR
+        if: steps.check.outputs.exists == 'false' || github.event.inputs.force_rebuild == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ------------------------------------------------
+      # Generate tags
+      # ------------------------------------------------
+      - name: Generate tags
+        if: steps.check.outputs.exists == 'false' || github.event.inputs.force_rebuild == 'true'
+        id: tags
+        run: |
+          tags=""
+          image="${{ matrix.image }}"
+          version="${{ matrix.version }}"
+          variant="${{ matrix.variant }}"
+          base="${{ matrix.base }}"
+          default_variant="${{ matrix.default_variant }}"
+          default_version="${{ matrix.default_version }}"
+          ghcr_namespace="ghcr.io/${{ github.repository_owner }}"
+
+          # Primary tag: version-base-variant (always)
+          tags="${{ env.DOCKERHUB_NAMESPACE }}/${image}:${version}-${base}-${variant}"
+          tags="${tags},${ghcr_namespace}/${image}:${version}-${base}-${variant}"
+
+          # Alias: version-variant (without base, for convenience)
+          tags="${tags},${{ env.DOCKERHUB_NAMESPACE }}/${image}:${version}-${variant}"
+          tags="${tags},${ghcr_namespace}/${image}:${version}-${variant}"
+
+          # Version alias (if default variant)
+          if [ "$variant" == "$default_variant" ]; then
+            tags="${tags},${{ env.DOCKERHUB_NAMESPACE }}/${image}:${version}"
+            tags="${tags},${ghcr_namespace}/${image}:${version}"
+          fi
+
+          # Latest tags (if default version)
+          if [ "$version" == "$default_version" ]; then
+            tags="${tags},${{ env.DOCKERHUB_NAMESPACE }}/${image}:latest-${base}-${variant}"
+            tags="${tags},${ghcr_namespace}/${image}:latest-${base}-${variant}"
+            tags="${tags},${{ env.DOCKERHUB_NAMESPACE }}/${image}:latest-${variant}"
+            tags="${tags},${ghcr_namespace}/${image}:latest-${variant}"
+          fi
+
+          # Latest tag (if default version AND default variant)
+          if [ "$version" == "$default_version" ] && [ "$variant" == "$default_variant" ]; then
+            tags="${tags},${{ env.DOCKERHUB_NAMESPACE }}/${image}:latest"
+            tags="${tags},${ghcr_namespace}/${image}:latest"
+          fi
+
+          echo "tags=$tags" >> $GITHUB_OUTPUT
+          echo "Generated tags: $tags"
+
+      # ------------------------------------------------
+      # Build and push
+      # ------------------------------------------------
+      - name: Build and push
+        if: steps.check.outputs.exists == 'false' || github.event.inputs.force_rebuild == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: images/${{ matrix.image }}
+          file: images/${{ matrix.image }}/Dockerfile
+          target: ${{ matrix.variant }}
+          tags: ${{ steps.tags.outputs.tags }}
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+          labels: |
+            org.opencontainers.image.version=${{ matrix.version }}
+            org.opencontainers.image.revision=${{ github.sha }}

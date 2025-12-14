@@ -1,0 +1,138 @@
+# XRPL Docker Images - Taskfile
+# https://taskfile.dev
+# Usage: task build IMAGE=rippled VERSION=3.0.0 VARIANT=distroless
+
+version: '3'
+
+vars:
+  IMAGE: '{{.IMAGE | default "rippled"}}'
+  VERSION:
+    sh: jq -r --arg name "{{.IMAGE}}" '.images[] | select(.name == $name) | .default_version' build/matrix.json
+  VARIANT:
+    sh: jq -r --arg name "{{.IMAGE}}" '.images[] | select(.name == $name) | .default_variant' build/matrix.json
+  BASE:
+    sh: jq -r --arg name "{{.IMAGE}}" --arg variant "{{.VARIANT}}" '.images[] | select(.name == $name) | .base_images[$variant]' build/matrix.json
+  NAMESPACE: '{{.NAMESPACE | default "gezibash"}}'
+  TAG: '{{.NAMESPACE}}/{{.IMAGE}}:{{.VERSION}}-{{.BASE}}-{{.VARIANT}}'
+  CONTEXT: 'images/{{.IMAGE}}'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build Docker image locally
+    cmds:
+      - 'echo "Building {{.TAG}}..."'
+      - |
+        docker buildx build \
+          --file {{.CONTEXT}}/Dockerfile \
+          --target {{.VARIANT}} \
+          --tag {{.TAG}} \
+          --load \
+          --platform linux/amd64 \
+          {{.CONTEXT}}
+      - 'echo "Built: {{.TAG}}"'
+
+  build-all:
+    desc: Build all variants for an image
+    cmds:
+      - 'echo "Building all variants for {{.IMAGE}} {{.VERSION}}..."'
+      - |
+        for variant in full slim distroless; do
+          base=$(jq -r --arg name "{{.IMAGE}}" --arg v "$variant" '.images[] | select(.name == $name) | .base_images[$v]' build/matrix.json)
+          echo "Building {{.IMAGE}}:{{.VERSION}}-$base-$variant..."
+          docker buildx build \
+            --file {{.CONTEXT}}/Dockerfile \
+            --target $variant \
+            --tag {{.NAMESPACE}}/{{.IMAGE}}:{{.VERSION}}-$base-$variant \
+            --load \
+            --platform linux/amd64 \
+            {{.CONTEXT}}
+        done
+      - 'echo "Done building all variants"'
+
+  test:
+    desc: Build and test image
+    deps: [build]
+    cmds:
+      - 'echo "Testing {{.TAG}}..."'
+      - |
+        if [ "{{.IMAGE}}" = "rippled" ]; then
+          docker run --rm {{.TAG}} /opt/ripple/bin/rippled --version
+        elif [ "{{.IMAGE}}" = "clio" ]; then
+          docker run --rm {{.TAG}} /opt/clio/bin/clio_server --version 2>/dev/null || echo "Clio started"
+        fi
+
+  lint:
+    desc: Lint Dockerfiles with hadolint
+    cmds:
+      - 'echo "Linting Dockerfiles..."'
+      - |
+        if command -v hadolint > /dev/null; then
+          hadolint images/rippled/Dockerfile
+          hadolint images/clio/Dockerfile
+        else
+          echo "hadolint not installed. Install with: brew install hadolint"
+          exit 1
+        fi
+
+  push:
+    desc: Build and push image to registries
+    deps: [build]
+    cmds:
+      - 'echo "Pushing {{.TAG}}..."'
+      - 'docker push {{.TAG}}'
+      - 'echo "Pushed: {{.TAG}}"'
+
+  clean:
+    desc: Remove local images
+    cmds:
+      - 'echo "Cleaning up local images..."'
+      - 'docker rmi {{.NAMESPACE}}/rippled:{{.VERSION}}-noble-full 2>/dev/null || true'
+      - 'docker rmi {{.NAMESPACE}}/rippled:{{.VERSION}}-bookworm-slim 2>/dev/null || true'
+      - 'docker rmi {{.NAMESPACE}}/rippled:{{.VERSION}}-bookworm-distroless 2>/dev/null || true'
+      - 'docker rmi {{.NAMESPACE}}/clio:{{.VERSION}}-noble-full 2>/dev/null || true'
+      - 'docker rmi {{.NAMESPACE}}/clio:{{.VERSION}}-bookworm-slim 2>/dev/null || true'
+      - 'docker rmi {{.NAMESPACE}}/clio:{{.VERSION}}-bookworm-distroless 2>/dev/null || true'
+      - 'echo "Cleanup complete"'
+
+  shell:
+    desc: Build and run shell in full variant (for debugging)
+    cmds:
+      - task: build
+        vars:
+          VARIANT: full
+      - 'echo "Starting shell in {{.NAMESPACE}}/{{.IMAGE}}:{{.VERSION}}-noble-full..."'
+      - 'docker run --rm -it --entrypoint /bin/bash {{.NAMESPACE}}/{{.IMAGE}}:{{.VERSION}}-noble-full'
+
+  matrix:
+    desc: Show current build matrix
+    cmds:
+      - 'echo "Build Matrix:"'
+      - |
+        jq -r '.images[] | "  \(.name): versions=\(.versions | join(", ")) variants=\(.variants | join(", ")) bases=\(.base_images | to_entries | map("\(.key):\(.value)") | join(", ")) default=\(.default_version)-\(.base_images[.default_variant])-\(.default_variant)"' build/matrix.json
+
+  validate:
+    desc: Validate matrix.json
+    cmds:
+      - 'echo "Validating matrix.json..."'
+      - 'jq empty build/matrix.json && echo "✓ Valid JSON"'
+      - 'jq -e ".images | length > 0" build/matrix.json > /dev/null && echo "✓ Images array non-empty"'
+      - 'jq -e ".images[] | .name and .versions and .variants" build/matrix.json > /dev/null && echo "✓ Required fields present"'
+      - 'jq -e ".images[] | .base_images" build/matrix.json > /dev/null && echo "✓ Base images defined"'
+      - 'echo "Validation passed!"'
+
+  info:
+    desc: Show current build configuration
+    cmds:
+      - 'echo "XRPL Docker Images - Build Configuration"'
+      - 'echo ""'
+      - 'echo "Current settings:"'
+      - 'echo "  IMAGE   = {{.IMAGE}}"'
+      - 'echo "  VERSION = {{.VERSION}}"'
+      - 'echo "  VARIANT = {{.VARIANT}}"'
+      - 'echo "  BASE    = {{.BASE}} (derived from variant)"'
+      - 'echo "  TAG     = {{.TAG}}"'

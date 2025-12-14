@@ -1,0 +1,30 @@
+{
+  "images": [
+    {
+      "name": "rippled",
+      "repo": "XRPLF/rippled",
+      "versions": ["3.0.0"],
+      "variants": ["full", "slim", "distroless"],
+      "base_images": {
+        "full": "noble",
+        "slim": "bookworm",
+        "distroless": "bookworm"
+      },
+      "default_variant": "distroless",
+      "default_version": "3.0.0"
+    },
+    {
+      "name": "clio",
+      "repo": "XRPLF/clio",
+      "versions": ["2.6.0"],
+      "variants": ["full", "slim", "distroless"],
+      "base_images": {
+        "full": "noble",
+        "slim": "bookworm",
+        "distroless": "bookworm"
+      },
+      "default_variant": "distroless",
+      "default_version": "2.6.0"
+    }
+  ]
+}

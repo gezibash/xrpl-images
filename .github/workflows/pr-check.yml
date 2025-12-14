@@ -1,0 +1,107 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'images/**'
+      - 'build/**'
+
+jobs:
+  # ==================================================
+  # Validate matrix.json structure
+  # ==================================================
+  validate-matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate matrix.json syntax
+        run: |
+          echo "Validating JSON syntax..."
+          jq empty build/matrix.json
+          echo "JSON syntax is valid"
+
+      - name: Validate matrix.json structure
+        run: |
+          echo "Validating structure..."
+
+          # Check that images array exists and is non-empty
+          jq -e '.images | length > 0' build/matrix.json > /dev/null
+          echo "✓ Images array exists and is non-empty"
+
+          # Check required fields for each image
+          jq -e '.images[] | .name and .versions and .variants and .default_variant and .default_version' build/matrix.json > /dev/null
+          echo "✓ All required fields present"
+
+          # Check that versions and variants arrays are non-empty
+          jq -e '.images[] | (.versions | length > 0) and (.variants | length > 0)' build/matrix.json > /dev/null
+          echo "✓ Versions and variants arrays are non-empty"
+
+          # Check that default_version is in versions array
+          jq -e '.images[] | .versions as $v | .default_version | IN($v[])' build/matrix.json > /dev/null
+          echo "✓ Default version exists in versions array"
+
+          # Check that default_variant is in variants array
+          jq -e '.images[] | .variants as $v | .default_variant | IN($v[])' build/matrix.json > /dev/null
+          echo "✓ Default variant exists in variants array"
+
+          echo "All validations passed!"
+
+  # ==================================================
+  # Lint Dockerfiles
+  # ==================================================
+  lint-dockerfiles:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint Dockerfiles with hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: images/rippled/Dockerfile
+          failure-threshold: warning
+
+      - name: Lint clio Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: images/clio/Dockerfile
+          failure-threshold: warning
+
+  # ==================================================
+  # Test build (no push)
+  # ==================================================
+  test-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [rippled, clio]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Get build parameters
+        id: params
+        run: |
+          version=$(jq -r --arg name "${{ matrix.image }}" '.images[] | select(.name == $name) | .versions[0]' build/matrix.json)
+          variant=$(jq -r --arg name "${{ matrix.image }}" '.images[] | select(.name == $name) | .variants[0]' build/matrix.json)
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "variant=$variant" >> $GITHUB_OUTPUT
+          echo "Building ${{ matrix.image }}:$version-$variant"
+
+      - name: Test build ${{ matrix.image }}
+        uses: docker/build-push-action@v5
+        with:
+          context: images/${{ matrix.image }}
+          file: images/${{ matrix.image }}/Dockerfile
+          target: ${{ steps.params.outputs.variant }}
+          tags: test/${{ matrix.image }}:${{ steps.params.outputs.version }}-${{ steps.params.outputs.variant }}
+          push: false
+          load: true
+          platforms: linux/amd64
+
+      - name: Verify image was built
+        run: |
+          docker images test/${{ matrix.image }}

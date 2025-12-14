@@ -1,0 +1,11 @@
+# Default validators for XRP Ledger Mainnet
+# Source: https://xrpl.org/connect-your-rippled-to-the-xrp-test-net.html
+#
+# These are the recommended validators published by the XRP Ledger Foundation.
+# For production use, you may want to customize this list based on your trust preferences.
+
+[validator_list_sites]
+https://vl.xrplf.org
+
+[validator_list_keys]
+ED45D1840EE724BE327ABE9146503D5848EFD5F38B6D5FEDE71E80ACCE5E6E738B

@@ -1,0 +1,122 @@
+name: Check for New Upstream Releases
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:
+
+jobs:
+  check-releases:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: rippled
+            repo: XRPLF/rippled
+          - name: clio
+            repo: XRPLF/clio
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get latest upstream release
+        id: upstream
+        run: |
+          latest=$(curl -s "https://api.github.com/repos/${{ matrix.repo }}/releases/latest" | jq -r .tag_name)
+          # Strip 'v' prefix if present
+          version="${latest#v}"
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "Latest ${{ matrix.name }} version: $version"
+
+      - name: Check if version exists in matrix
+        id: check
+        run: |
+          exists=$(jq -r --arg name "${{ matrix.name }}" --arg version "${{ steps.upstream.outputs.version }}" \
+            '.images[] | select(.name == $name) | .versions | index($version)' \
+            build/matrix.json)
+
+          if [ "$exists" == "null" ]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Version ${{ steps.upstream.outputs.version }} is NEW"
+          else
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Version ${{ steps.upstream.outputs.version }} already tracked"
+          fi
+
+      - name: Check for existing PR
+        id: check_pr
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${{ steps.upstream.outputs.version }}"
+          image="${{ matrix.name }}"
+          branch="auto/${image}-${version}"
+
+          # Check if PR already exists for this branch
+          pr_count=$(gh pr list --head "$branch" --json number --jq 'length')
+
+          if [ "$pr_count" -gt 0 ]; then
+            echo "PR already exists for branch $branch"
+            echo "pr_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "No existing PR for branch $branch"
+            echo "pr_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create PR for new version
+        if: steps.check.outputs.exists == 'false' && steps.check_pr.outputs.pr_exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${{ steps.upstream.outputs.version }}"
+          image="${{ matrix.name }}"
+          branch="auto/${image}-${version}"
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Create branch
+          git checkout -b "$branch"
+
+          # Update matrix.json - prepend new version to array
+          jq --arg name "$image" --arg version "$version" \
+            '(.images[] | select(.name == $name) | .versions) |= [$version] + .' \
+            build/matrix.json > build/matrix.json.tmp
+          mv build/matrix.json.tmp build/matrix.json
+
+          # Update default_version to new version
+          jq --arg name "$image" --arg version "$version" \
+            '(.images[] | select(.name == $name) | .default_version) = $version' \
+            build/matrix.json > build/matrix.json.tmp
+          mv build/matrix.json.tmp build/matrix.json
+
+          # Commit and push
+          git add build/matrix.json
+          git commit -m "feat(${image}): add version ${version}"
+          git push origin "$branch"
+
+          # Create PR
+          gh pr create \
+            --title "feat(${image}): add version ${version}" \
+            --body "$(cat <<EOF
+## New Upstream Release Detected
+
+**Image:** \`$image\`
+**Version:** \`$version\`
+**Upstream Release:** https://github.com/${{ matrix.repo }}/releases/tag/v${version}
+
+This PR was automatically created by the release checker workflow.
+
+### Checklist
+- [ ] Review upstream release notes for breaking changes
+- [ ] Verify build compatibility
+- [ ] Merge when ready to publish
+
+---
+*Merging this PR will trigger the build workflow and publish new images.*
+EOF
+)" \
+            --base main \
+            --head "$branch"
