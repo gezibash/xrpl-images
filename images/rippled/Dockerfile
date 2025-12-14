@@ -103,6 +103,7 @@ COPY --from=builder /runtime/etc/ssl /etc/ssl
 # Copy configuration
 COPY configs/ /etc/rippled/
 
+USER 999:999
 WORKDIR /var/lib/rippled
 
 VOLUME ["/etc/rippled", "/var/lib/rippled"]
@@ -115,7 +116,7 @@ CMD ["--conf", "/etc/rippled/rippled.cfg"]
 # =============================================================================
 # Stage 2c: Distroless - No shell, minimal attack surface
 # =============================================================================
-FROM --platform=linux/amd64 gcr.io/distroless/cc-debian12:nonroot AS distroless
+FROM --platform=linux/amd64 gcr.io/distroless/cc-debian12 AS distroless
 
 LABEL org.opencontainers.image.title="rippled-distroless"
 LABEL org.opencontainers.image.description="XRP Ledger server (distroless variant)"
@@ -130,6 +131,7 @@ COPY --from=builder /runtime/etc/ssl /etc/ssl
 # Copy configuration
 COPY configs/ /etc/rippled/
 
+USER 999:999
 WORKDIR /var/lib/rippled
 
 VOLUME ["/etc/rippled", "/var/lib/rippled"]

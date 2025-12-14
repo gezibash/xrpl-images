@@ -72,10 +72,11 @@ COPY configs/ /etc/clio/
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Create data directory (clio user already exists from apt package)
-RUN mkdir -p /var/lib/clio && chown -R clio:clio /var/lib/clio
+# Modify clio user to use UID/GID 999 for consistency with rippled
+RUN usermod -u 999 clio && groupmod -g 999 clio \
+    && mkdir -p /var/lib/clio && chown -R 999:999 /var/lib/clio
 
-USER clio
+USER 999:999
 WORKDIR /var/lib/clio
 
 VOLUME ["/etc/clio", "/var/lib/clio"]
@@ -103,6 +104,7 @@ COPY --from=builder /runtime/etc/ssl /etc/ssl
 # Copy configuration
 COPY configs/ /etc/clio/
 
+USER 999:999
 WORKDIR /var/lib/clio
 
 VOLUME ["/etc/clio", "/var/lib/clio"]
@@ -115,7 +117,7 @@ CMD ["--conf", "/etc/clio/config.json"]
 # =============================================================================
 # Stage 2c: Distroless - No shell, minimal attack surface
 # =============================================================================
-FROM --platform=linux/amd64 gcr.io/distroless/cc-debian12:nonroot AS distroless
+FROM --platform=linux/amd64 gcr.io/distroless/cc-debian12 AS distroless
 
 LABEL org.opencontainers.image.title="clio-distroless"
 LABEL org.opencontainers.image.description="XRP Ledger Clio API server (distroless variant)"
@@ -130,6 +132,7 @@ COPY --from=builder /runtime/etc/ssl /etc/ssl
 # Copy configuration
 COPY configs/ /etc/clio/
 
+USER 999:999
 WORKDIR /var/lib/clio
 
 VOLUME ["/etc/clio", "/var/lib/clio"]
