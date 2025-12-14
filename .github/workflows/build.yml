@@ -25,6 +25,10 @@ on:
 env:
   DOCKERHUB_NAMESPACE: gezibash
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   # ==================================================
   # Generate build matrix from matrix.json

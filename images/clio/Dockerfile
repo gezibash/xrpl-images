@@ -72,9 +72,8 @@ COPY configs/ /etc/clio/
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Create clio user and data directory
-RUN useradd -r -m -d /var/lib/clio -s /bin/bash clio \
-    && mkdir -p /var/lib/clio && chown -R clio:clio /var/lib/clio
+# Create data directory (clio user already exists from apt package)
+RUN mkdir -p /var/lib/clio && chown -R clio:clio /var/lib/clio
 
 USER clio
 WORKDIR /var/lib/clio
